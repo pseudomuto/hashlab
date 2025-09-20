@@ -1,0 +1,36 @@
+version: "3"
+
+tasks:
+  default:
+    cmd: task -a
+
+  lint:
+    desc: Run Go linter
+    cmds:
+      - golangci-lint run
+
+  fmt:
+    desc: Format Go code
+    cmds:
+      - golangci-lint run --fix
+
+  test:
+    desc: Run all tests
+    cmd: go test ./hashring/... -v
+
+  test:bench:
+    desc: Run benchmark tests
+    cmd: go test ./hashring -bench=. -benchmem
+
+  run:
+    desc: Run the demo application
+    cmd: go run ./cmd/demo
+
+  demo:*:
+    desc: Run the specified demo app
+    vars:
+      APP: "{{index .MATCH 0}}"
+    preconditions:
+      - sh: "test -d examples/{{.APP}}"
+        msg: No example called {{.APP}}. See the examples directory for options.
+    cmd: go run ./examples/{{.APP}} {{.CLI_ARGS}}

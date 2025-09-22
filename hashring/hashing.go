@@ -7,6 +7,7 @@ import (
 	"slices"
 	"sort"
 	"sync"
+	"time"
 )
 
 // HashRing represents a consistent hash ring
@@ -15,6 +16,7 @@ type HashRing struct {
 	ring       map[uint32]string // hash -> server name
 	serverKeys []uint32          // sorted server hashes
 	servers    map[string]bool   // map of servers
+	vnodes     int               // The number of virtual nodes per server
 }
 
 // New creates a new hash ring with the specified number of virtual nodes per server
@@ -23,7 +25,7 @@ func New(virtualNodes int) *HashRing {
 		ring:       make(map[uint32]string),
 		serverKeys: make([]uint32, 0),
 		servers:    make(map[string]bool),
-		// TODO: Keep track of virtual nodes
+		vnodes:     virtualNodes,
 	}
 }
 
@@ -43,14 +45,11 @@ func (h *HashRing) AddServer(server string) error {
 
 	h.servers[server] = true
 
-	// TODO: Replace this implementation (following 3 lines).
-	//
-	// We want to create entries in ring and serverKeys for each virtual node
-	// vnodes can be named however you like, my suggestion would be `<server>#<n>`, where server is the parameter and N
-	// is the virtual node index,
-	hash := h.hashKey(server)
-	h.ring[hash] = server
-	h.serverKeys = append(h.serverKeys, hash)
+	for i := range h.vnodes {
+		hash := h.hashKey(fmt.Sprintf("%s#%d", server, i))
+		h.ring[hash] = server
+		h.serverKeys = append(h.serverKeys, hash)
+	}
 
 	slices.Sort(h.serverKeys)
 	return nil
@@ -67,16 +66,13 @@ func (h *HashRing) RemoveServer(server string) error {
 
 	delete(h.servers, server)
 
-	// TODO: Replace the code between BEGIN and END comments.
-	//
-	// We need to remove all vnodes from ring and serverKeys for the specified server. Be sure to maintain sort order.
-	// BEGIN
-	hash := h.hashKey(server)
-	delete(h.ring, hash)
+	for i := range h.vnodes {
+		hash := h.hashKey(fmt.Sprintf("%s#%d", server, i))
+		delete(h.ring, hash)
 
-	idx := slices.Index(h.serverKeys, hash)
-	h.serverKeys = append(h.serverKeys[:idx], h.serverKeys[idx+1:]...)
-	// END
+		idx := slices.Index(h.serverKeys, hash)
+		h.serverKeys = append(h.serverKeys[:idx], h.serverKeys[idx+1:]...)
+	}
 
 	return nil
 }
@@ -146,4 +142,64 @@ func (h *HashRing) Size() int {
 	defer h.mu.RUnlock()
 
 	return len(h.servers)
+}
+
+// AnalyzePerformance runs a comprehensive performance analysis on the hash ring.
+//
+// This method evaluates:
+//   - Key distribution across servers (uniformity)
+//   - Average lookup latency per key
+//   - Distribution quality using Coefficient of Variation (CV)
+//
+// A lower CV percentage indicates better distribution:
+//   - CV < 5%: Excellent distribution
+//   - CV < 10%: Good distribution
+//   - CV > 10%: Consider adjusting virtual nodes
+//
+// See: https://en.wikipedia.org/wiki/Coefficient_of_variation
+//
+// This operation is thread-safe but may be slow for large key sets.
+// It's recommended to run this during testing or monitoring, not in hot paths.
+//
+// Example:
+//
+//	testKeys := generateTestKeys(10000)
+//	metrics := ring.AnalyzePerformance(testKeys)
+//	metrics.Print() // Display formatted analysis
+func (h *HashRing) AnalyzePerformance(keys []string) PerformanceMetrics {
+	start := time.Now()
+
+	// Measure average latency
+	distribution := h.GetDistribution(keys)
+	avgLatency := time.Since(start) / time.Duration(len(keys))
+
+	// Calculate distribution quality (Coefficient of Variation)
+	mean := float64(len(keys)) / float64(len(distribution))
+	var variance float64
+	for _, count := range distribution {
+		diff := float64(count) - mean
+		variance += diff * diff
+	}
+
+	stdDev := 0.0
+	if len(distribution) > 0 {
+		variance /= float64(len(distribution))
+		stdDev = variance
+		for range 10 { // Simple sqrt approximation
+			stdDev = (stdDev + variance/stdDev) / 2
+		}
+	}
+
+	cv := 0.0
+	if mean > 0 {
+		cv = (stdDev / mean) * 100
+	}
+
+	return PerformanceMetrics{
+		TotalKeys:      len(keys),
+		Servers:        len(distribution),
+		AvgLatency:     avgLatency,
+		DistributionCV: cv,
+		Distribution:   distribution,
+	}
 }

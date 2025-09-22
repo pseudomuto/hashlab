@@ -165,10 +165,10 @@ func TestConsistency(t *testing.T) {
 		}
 	}
 
-	// With simple hashing, roughly 75% of keys should move.
+	// With consistent hashing, roughly 25% of keys should move.
 	// NB: Leaving a little wiggle-room on either side for tests.
-	require.GreaterOrEqual(t, moved, 700, "Too few keys moved")
-	require.LessOrEqual(t, moved, 800, "Too many keys moved")
+	require.GreaterOrEqual(t, moved, 150, "Too few keys moved")
+	require.LessOrEqual(t, moved, 350, "Too many keys moved")
 
 	t.Logf("Keys moved when adding server: %d out of 1000 (%.1f%%)", moved, float64(moved)/10)
 }

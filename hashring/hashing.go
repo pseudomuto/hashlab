@@ -5,23 +5,25 @@ import (
 	"fmt"
 	"hash/crc32"
 	"slices"
+	"sort"
 	"sync"
 )
 
 // HashRing represents a consistent hash ring
 type HashRing struct {
-	mu sync.RWMutex
-	// TODO: Update to use ring (map[uint32]string), serverKeys ([]uint32), and servers (same).
-	servers    map[string]bool
-	serverList []string
+	mu         sync.RWMutex
+	ring       map[uint32]string // hash -> server name
+	serverKeys []uint32          // sorted server hashes
+	servers    map[string]bool   // map of servers
 }
 
 // New creates a new hash ring with the specified number of virtual nodes per server
 func New(virtualNodes int) *HashRing {
 	return &HashRing{
-		// TODO: Update struct fields
+		ring:       make(map[uint32]string),
+		serverKeys: make([]uint32, 0),
 		servers:    make(map[string]bool),
-		serverList: make([]string, 0),
+		// TODO: Keep track of virtual nodes
 	}
 }
 
@@ -41,15 +43,16 @@ func (h *HashRing) AddServer(server string) error {
 
 	h.servers[server] = true
 
-	// TODO: Remove the next two lines (field no longer exists).
-	h.serverList = append(h.serverList, server)
-	slices.Sort(h.serverList) // For consistent indexing
+	// TODO: Replace this implementation (following 3 lines).
+	//
+	// We want to create entries in ring and serverKeys for each virtual node
+	// vnodes can be named however you like, my suggestion would be `<server>#<n>`, where server is the parameter and N
+	// is the virtual node index,
+	hash := h.hashKey(server)
+	h.ring[hash] = server
+	h.serverKeys = append(h.serverKeys, hash)
 
-	// TODO: Hash the server name directly.
-	// TODO: Add the hash to the ring.
-	// TODO: Add the key to serverKeys.
-	// TODO: Ensure serverKeys remains in sorted order.
-
+	slices.Sort(h.serverKeys)
 	return nil
 }
 
@@ -58,24 +61,22 @@ func (h *HashRing) RemoveServer(server string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if _, ok := h.servers[server]; !ok {
+	if !h.servers[server] {
 		return fmt.Errorf("server not found: %s", server)
 	}
 
 	delete(h.servers, server)
 
-	////////////////////////////////////////////////////////////////////////////////
-	// TODO: ❌ THIS IS THE PROBLEM: hash % N
-	// When N changes (add/remove server), most keys get different results!
+	// TODO: Replace the code between BEGIN and END comments.
 	//
-	// REMOVE THESE TWO LINES
-	////////////////////////////////////////////////////////////////////////////////
-	idx := slices.Index(h.serverList, server)
-	h.serverList = append(h.serverList[:idx], h.serverList[idx+1:]...)
+	// We need to remove all vnodes from ring and serverKeys for the specified server. Be sure to maintain sort order.
+	// BEGIN
+	hash := h.hashKey(server)
+	delete(h.ring, hash)
 
-	// TODO: Hash the server
-	// TODO: Remove it from the ring map
-	// TODO: Remove it from the serverKeys list (retain sort order)
+	idx := slices.Index(h.serverKeys, hash)
+	h.serverKeys = append(h.serverKeys[:idx], h.serverKeys[idx+1:]...)
+	// END
 
 	return nil
 }
@@ -85,19 +86,23 @@ func (h *HashRing) GetServer(key string) (string, error) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
-	if len(h.serverList) == 0 {
+	if len(h.servers) == 0 {
 		return "", errors.New("no servers available")
 	}
 
 	hash := h.hashKey(key)
 
-	// TODO: Remove the next two lines
-	idx := int(hash % uint32(len(h.serverList))) // nolint: gosec
-	return h.serverList[idx], nil
+	// NB: This works because we keep serverKeys sorted.
+	idx := sort.Search(len(h.serverKeys), func(i int) bool {
+		return h.serverKeys[i] >= hash
+	})
 
-	// TODO: Find the index of the next ("clockwise") server in the ring (see sort.Search).
-	// TODO: Any special case you can think of?
-	// TODO: Return the server from the ring (you need the preceeding values).
+	// NB: sort.Search returns n, when not found. Because we know a server exists, it must be at index 0.
+	if idx == len(h.serverKeys) {
+		idx = 0 // Ringify
+	}
+
+	return h.ring[h.serverKeys[idx]], nil
 }
 
 // GetServers returns all servers in the ring
@@ -105,12 +110,13 @@ func (h *HashRing) GetServers() []string {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
-	// TODO: serverList is no more, remove the next 3 lines.
-	servers := make([]string, len(h.serverList))
-	copy(servers, h.serverList)
-	return servers
+	servers := make([]string, 0, len(h.servers))
+	for server := range h.servers {
+		servers = append(servers, server)
+	}
 
-	// TODO: Return a sorted list of server names.
+	slices.Sort(servers)
+	return servers
 }
 
 // GetDistribution returns a map of server -> count of keys
@@ -119,8 +125,8 @@ func (h *HashRing) GetDistribution(keys []string) map[string]int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
-	dist := make(map[string]int, len(h.serverList))
-	for _, server := range h.serverList {
+	dist := make(map[string]int, len(h.servers))
+	for server := range h.servers {
 		dist[server] = 0
 	}
 
@@ -139,5 +145,5 @@ func (h *HashRing) Size() int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
-	return len(h.serverList)
+	return len(h.servers)
 }
